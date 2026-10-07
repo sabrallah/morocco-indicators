@@ -118,17 +118,24 @@ def fetch_secours() -> pd.DataFrame:
     )
 
 
-def fetch() -> pd.DataFrame:
-    """Tente le live, sinon le secours. Ajoute horodatage + source."""
+def fetch_with_status() -> tuple:
+    """Comme fetch(), plus (direct_ok, detail). direct_ok=False = site bloque."""
     try:
         df = fetch_live()
         print(f"[pipeline] scrape direct OK : {len(df)} indicateurs")
+        direct_ok, detail = True, ""
     except Exception as exc:
         detail = str(exc).encode("ascii", "ignore").decode()[:200]
         print(f"[pipeline] echec direct ({detail}), releve de secours")
-        df = fetch_secours()
+        df, direct_ok = fetch_secours(), False
     df["fetched_at"] = datetime.now(timezone.utc).isoformat()
     df["source"] = URL
+    return df, direct_ok, detail
+
+
+def fetch() -> pd.DataFrame:
+    """Tente le live, sinon le secours. Ajoute horodatage + source."""
+    df, _, _ = fetch_with_status()
     return df
 
 

@@ -97,13 +97,21 @@ def render_sidebar() -> None:
         st.header("Controles")
         if st.button("Mettre a jour", type="primary", use_container_width=True):
             with st.spinner("Recuperation depuis TradingEconomics..."):
-                from pipeline.fetch_te import fetch, save
+                from pipeline.fetch_te import fetch_with_status, save
 
-                df_new = fetch()
+                df_new, direct_ok, detail = fetch_with_status()
                 save(df_new)
                 load_latest.clear()
                 load_history.clear()
-            st.toast(f"{len(df_new)} indicateurs mis a jour")
+            if direct_ok:
+                st.session_state["avis_maj"] = ("ok", f"{len(df_new)} indicateurs mis a jour")
+            else:
+                st.session_state["avis_maj"] = (
+                    "alerte",
+                    "TradingEconomics a bloque la recuperation en direct. "
+                    f"Releve de secours affiche ({len(df_new)} indicateurs). "
+                    f"Detail : {detail or 'site injoignable'}",
+                )
             st.rerun()
         if st.button("Rafraichir l'affichage", use_container_width=True):
             load_latest.clear()
@@ -270,6 +278,15 @@ def main() -> None:
         st.stop()
 
     df, fr_vers_en = franciser(df)
+
+    avis = st.session_state.pop("avis_maj", None)
+    if avis:
+        nature, message = avis
+        if nature == "ok":
+            st.success(message)
+        else:
+            st.warning(message)
+
     render_header(df)
     render_kpi_cards(df)
 
