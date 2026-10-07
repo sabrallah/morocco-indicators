@@ -236,7 +236,11 @@ def selected_indicator(df: pd.DataFrame, tableau: pd.DataFrame, event) -> str:
 
 
 def render_history(df: pd.DataFrame, fr_vers_en: dict, tableau: pd.DataFrame, event) -> None:
-    """Courbe d'historique de l'indicateur choisi (ou clique dans le tableau)."""
+    """Courbe d'historique (si SQLite) + variations dernier vs precedent (toujours).
+
+    Doc graphiques : st.line_chart / st.bar_chart avec donnees tidy
+    (colonnes x / y explicites) et width="stretch".
+    """
     with st.container():
         st.subheader("Historique")
         presel = selected_indicator(df, tableau, event)
@@ -247,12 +251,26 @@ def render_history(df: pd.DataFrame, fr_vers_en: dict, tableau: pd.DataFrame, ev
         )
         hist = load_history(fr_vers_en.get(choix, choix))
         if hist.empty:
-            st.info("Pas encore d'historique. Lancez : `python pipeline/fetch_te.py --loop 300`.")
-            return
-        hist["fetched_at"] = pd.to_datetime(hist["fetched_at"])
-        hist = hist.sort_values("fetched_at")
-        st.line_chart(hist.set_index("fetched_at")["last"], width="stretch")
-        st.caption(f"{len(hist)} points enregistres pour « {choix} ».")
+            st.info(
+                "Pas encore de courbe : cliquez « Mettre a jour » au moins 2 fois "
+                "(ou `python pipeline/fetch_te.py --loop 300` en local) pour accumuler des points."
+            )
+        else:
+            courbe = hist.assign(fetched_at=pd.to_datetime(hist["fetched_at"])).sort_values(
+                "fetched_at"
+            )
+            st.line_chart(courbe, x="fetched_at", y="last", width="stretch")
+            st.caption(f"{len(courbe)} points enregistres pour « {choix} ».")
+
+        st.divider()
+        st.subheader("Variations (dernier releve vs precedent)")
+        variations = df.dropna(subset=["last", "previous"]).copy()
+        variations["variation"] = variations["last"] - variations["previous"]
+        top = variations.reindex(
+            variations["variation"].abs().sort_values(ascending=False).index
+        ).head(10)
+        st.bar_chart(top, x="indicateur_fr", y="variation", width="stretch")
+        st.caption("Top 10 des plus fortes variations absolues du dernier releve.")
 
 
 # ----------------------------------------------------------------------------
