@@ -163,7 +163,7 @@ def render_kpi_cards(df: pd.DataFrame) -> None:
 
 
 # ----------------------------------------------------------------------------
-# Interface : onglets Tableau / Historique / Methode
+# Interface : onglets Tableau / Historique
 # ----------------------------------------------------------------------------
 def render_table(df: pd.DataFrame):
     """Tableau filtrable et selectionnable (doc st.dataframe + column_config).
