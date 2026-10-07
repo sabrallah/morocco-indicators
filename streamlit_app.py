@@ -1,9 +1,10 @@
-"""Indicateurs du Maroc - application Streamlit en francais.
-Donnees : TradingEconomics (pipeline) - affichage 100% francais.
-Lancement : streamlit run app.py
+"""Indicateurs du Maroc - application Streamlit organisee (doc officielle).
+Patterns doc : st.sidebar (controles persistants), st.tabs, st.columns(gap),
+st.container(border=True), st.expander, st.dataframe(width/column_config/on_select),
+@st.fragment(run_every) pour l'actualisation partielle, theme via .streamlit/config.toml.
+Donnees : TradingEconomics - affichage 100% francais.
 """
 import sqlite3
-import time
 from pathlib import Path
 
 import pandas as pd
@@ -21,34 +22,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- style moderne et clair ---
-st.markdown(
-    """
-    <style>
-    .main { background-color: #f6f8fb; }
-    .block-container { padding-top: 1.2rem; max-width: 1200px; }
-    h1 { font-size: 1.9rem !important; font-weight: 700 !important; color: #0f2a44 !important; }
-    .sous-titre { color: #5b6b7c; font-size: 0.95rem; margin-top: -0.6rem; }
-    .badge { display: inline-block; background: #e8eef6; color: #0f2a44;
-              border-radius: 999px; padding: 0.2rem 0.7rem; font-size: 0.8rem; margin-right: 0.4rem; }
-    [data-testid="stMetric"] { background: #ffffff; border: 1px solid #e3e9f1;
-        border-radius: 14px; padding: 0.9rem 1rem; box-shadow: 0 1px 3px rgba(15,42,68,0.06); }
-    [data-testid="stMetricLabel"] { color: #5b6b7c !important; font-size: 0.82rem !important; }
-    [data-testid="stMetricValue"] { color: #0f2a44 !important; }
-    section[data-testid="stSidebar"] { background: #ffffff; border-right: 1px solid #e3e9f1; }
-    .stDataFrame { background: #ffffff; border-radius: 14px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.title("Indicateurs economiques du Maroc")
-st.markdown(
-    f"<div class='sous-titre'>Pipeline TradingEconomics vers Streamlit - donnees traduites en francais. "
-    f"Source : <a href='{SOURCE_URL}' target='_blank'>tradingeconomics.com/morocco</a></div>",
-    unsafe_allow_html=True,
-)
-
+# ---------- donnees ----------
 @st.cache_data(ttl=10)
 def load_latest():
     if DB_PATH.exists():
@@ -77,7 +51,7 @@ def load_history(indicator: str, limit: int = 200):
     finally:
         con.close()
 
-# --- barre laterale : controles ---
+# ---------- barre laterale : controles persistants (doc layouts) ----------
 with st.sidebar:
     st.header("Controles")
     if st.button("Mettre a jour", type="primary", use_container_width=True):
@@ -87,16 +61,21 @@ with st.sidebar:
             save(df_new)
             load_latest.clear()
             load_history.clear()
-        st.success(f"{len(df_new)} indicateurs mis a jour")
-        time.sleep(1)
+        st.toast(f"{len(df_new)} indicateurs mis a jour")
         st.rerun()
     if st.button("Rafraichir l'affichage", use_container_width=True):
+        load_latest.clear()
         st.rerun()
-    interval = st.selectbox("Intervalle d'actualisation (s)", [15, 60, 300, 900], index=1)
-    auto = st.toggle("Actualisation auto", value=False)
-    st.divider()
-    st.caption("Astuce : laissez la pipeline tourner en boucle avec `python pipeline/fetch_te.py --loop 300` pour accumuler l'historique.")
+    interval = st.selectbox("Intervalle du bandeau direct (s)", [15, 60, 300], index=1)
+    direct = st.toggle("Bandeau direct (fragment)", value=True)
+    with st.expander("Aide"):
+        st.markdown(
+            "- **Mettre a jour** : re-scrape TradingEconomics vers SQLite.\n"
+            "- **Tableau** : cliquez une ligne pour voir son historique.\n"
+            "- Boucle locale : `python pipeline/fetch_te.py --loop 300`."
+        )
 
+# ---------- chargement + traduction ----------
 try:
     df = load_latest()
 except Exception:
@@ -109,18 +88,46 @@ if df.empty:
     st.stop()
 
 from pipeline.traduction import traduire_indicateur, traduire_unite
+
 df["indicateur_fr"] = df["indicator"].apply(traduire_indicateur)
 df["unite_fr"] = df["unit"].apply(lambda u: traduire_unite(u) if pd.notna(u) else u)
 FR_VERS_EN = dict(zip(df["indicateur_fr"], df["indicator"]))
 
-maj = df["fetched_at"].max() if "fetched_at" in df else "N/D"
-st.markdown(
-    f"<span class='badge'>{len(df)} indicateurs</span>"
-    f"<span class='badge'>Derniere mise a jour : {maj}</span>",
-    unsafe_allow_html=True,
-)
 
-# --- cartes KPI ---
+def _nb_hist_points():
+    if not DB_PATH.exists():
+        return "0"
+    try:
+        con = sqlite3.connect(DB_PATH)
+        try:
+            return str(con.execute("SELECT COUNT(*) FROM indicators_history").fetchone()[0])
+        finally:
+            con.close()
+    except Exception:
+        return "N/D"
+
+# ---------- en-tete ----------
+with st.container():
+    st.title("Indicateurs economiques du Maroc")
+    st.caption(f"Source : {SOURCE_URL} - donnees traduites en francais")
+    maj = df["fetched_at"].max() if "fetched_at" in df else "N/D"
+    c1, c2, c3 = st.columns(3, gap="small")
+    c1.metric("Indicateurs suivis", f"{len(df)}")
+    c2.metric("Derniere mise a jour", str(maj)[:16])
+    c3.metric("Points d'historique", _nb_hist_points())
+
+# ---------- bandeau direct : fragment a re-execution partielle (doc st.fragment) ----------
+@st.fragment(run_every=interval if direct else None)
+def bandeau_direct():
+    with st.container(border=True):
+        a, b = st.columns([3, 1], gap="small")
+        a.write(f"Direct : {pd.Timestamp.now().strftime('%H:%M:%S')} - mode fragment, seul ce bandeau se rejoue.")
+        if b.button("Rejouer ce bandeau"):
+            st.rerun(scope="fragment")
+
+bandeau_direct()
+
+# ---------- cartes KPI ----------
 LIBELLES = {
     "GDP Annual Growth Rate": "Croissance du PIB",
     "Inflation Rate": "Inflation",
@@ -136,65 +143,88 @@ def kpi(nom_te):
     delta = (r["last"] - r["previous"]) if pd.notna(r.get("previous")) else None
     return r, delta
 
-k1, k2, k3, k4 = st.columns(4)
-for col, nom_te in zip([k1, k2, k3, k4], LIBELLES.keys()):
-    with col:
-        with st.container(border=True):
-            res = kpi(nom_te)
-            if res is None:
-                st.metric(LIBELLES[nom_te], "N/D")
-            else:
-                r, delta = res
-                unite = traduire_unite(r.get("unite_fr", r.get("unit", "")))
-                st.metric(
-                    f"{LIBELLES[nom_te]} ({unite})",
-                    f"{r['last']}",
-                    delta=f"{round(delta, 2)}" if delta is not None else None,
-                )
-                st.caption(f"Date : {r.get('date', 'N/D')}")
+with st.container():
+    st.subheader("Chiffres cles")
+    k1, k2, k3, k4 = st.columns(4, gap="medium")
+    for col, nom_te in zip([k1, k2, k3, k4], LIBELLES.keys()):
+        with col:
+            with st.container(border=True):
+                res = kpi(nom_te)
+                if res is None:
+                    st.metric(LIBELLES[nom_te], "N/D")
+                else:
+                    r, delta = res
+                    st.metric(
+                        f"{LIBELLES[nom_te]} ({traduire_unite(r.get('unite_fr', r.get('unit', '')))})",
+                        f"{r['last']}",
+                        delta=f"{round(delta, 2)}" if delta is not None else None,
+                    )
+                    st.caption(f"Date : {r.get('date', 'N/D')}")
 
-onglets = st.tabs(["Tableau", "Historique", "A propos"])
+# ---------- onglets ----------
+tab_tableau, tab_histo, tab_methode = st.tabs(["Tableau", "Historique", "Methode"])
 
-with onglets[0]:
-    q = st.text_input("Filtrer", placeholder="Ex : PIB, chomage, inflation")
-    vue = df[df.indicateur_fr.str.contains(q, case=False, na=False)] if q else df
-    vue_aff = pd.DataFrame({
-        "Indicateur": vue["indicateur_fr"],
-        "Valeur": vue["last"],
-        "Precedent": vue["previous"],
-        "Unite": vue["unite_fr"],
-        "Date": vue["date"],
-    }).sort_values("Indicateur")
-    st.dataframe(vue_aff, use_container_width=True, hide_index=True)
-    st.caption(f"{len(vue_aff)} lignes affichees.")
+with tab_tableau:
+    with st.container():
+        q = st.text_input("Filtrer", placeholder="Ex : PIB, chomage, inflation")
+        vue = df[df.indicateur_fr.str.contains(q, case=False, na=False)] if q else df
+        vue_aff = pd.DataFrame({
+            "Indicateur": vue["indicateur_fr"],
+            "Valeur": vue["last"],
+            "Precedent": vue["previous"],
+            "Unite": vue["unite_fr"],
+            "Date": vue["date"],
+        }).sort_values("Indicateur")
+        event = st.dataframe(
+            vue_aff,
+            width="stretch",
+            hide_index=True,
+            column_order=("Indicateur", "Valeur", "Precedent", "Unite", "Date"),
+            column_config={
+                "Indicateur": st.column_config.TextColumn("Indicateur", width="large"),
+                "Valeur": st.column_config.NumberColumn("Valeur", format="%.2f"),
+                "Precedent": st.column_config.NumberColumn("Precedent", format="%.2f"),
+                "Unite": st.column_config.TextColumn("Unite", width="medium"),
+                "Date": st.column_config.TextColumn("Date", width="small"),
+            },
+            on_select="rerun",
+            selection_mode="single-row",
+            key="tableau",
+        )
+        st.caption(f"{len(vue_aff)} lignes. Cliquez une ligne pour l'envoyer vers l'onglet Historique.")
 
-with onglets[1]:
-    col_g, col_d = st.columns([1, 2])
-    with col_g:
-        ind_fr = st.selectbox("Indicateur", sorted(df["indicateur_fr"].unique().tolist()))
+with tab_histo:
+    with st.container():
+        st.subheader("Historique")
+        # priorite a la ligne selectionnee dans le tableau (doc dataframe selections)
+        sel_fr = None
+        try:
+            rows = event.selection.get("rows", []) if event is not None else []
+            if rows:
+                sel_fr = vue_aff.iloc[rows[0]]["Indicateur"]
+        except Exception:
+            sel_fr = None
+        choix = sel_fr if sel_fr in df["indicateur_fr"].tolist() else None
+        ind_fr = st.selectbox(
+            "Indicateur",
+            sorted(df["indicateur_fr"].unique().tolist()),
+            index=sorted(df["indicateur_fr"].unique().tolist()).index(choix) if choix else 0,
+        )
         ind_en = FR_VERS_EN.get(ind_fr, ind_fr)
-        ligne = df[df["indicator"] == ind_en].iloc[0] if (df["indicator"] == ind_en).any() else None
-        if ligne is not None:
-            st.metric("Valeur", f"{ligne['last']} {traduire_unite(ligne.get('unit',''))}")
-            st.metric("Precedent", f"{ligne.get('previous', 'N/D')}")
-            st.caption(f"Date : {ligne.get('date', 'N/D')}")
-    with col_d:
         hist = load_history(ind_en)
         if hist.empty:
-            st.info("Pas encore d'historique. Lancez la pipeline en boucle : `python pipeline/fetch_te.py --loop 300`.")
+            st.info("Pas encore d'historique. Lancez : `python pipeline/fetch_te.py --loop 300`.")
         else:
             hist["fetched_at"] = pd.to_datetime(hist["fetched_at"])
             hist = hist.sort_values("fetched_at")
             st.line_chart(hist.set_index("fetched_at")["last"], use_container_width=True)
-            st.caption(f"{len(hist)} points enregistres.")
+            st.caption(f"{len(hist)} points enregistres pour « {ind_fr} ».")
 
-with onglets[2]:
-    st.markdown(
-        "- **Source** : TradingEconomics Maroc, scrapee par `pipeline/fetch_te.py` vers SQLite/CSV.\n"
-        "- **Traduction** : `pipeline/traduction.py` (73 indicateurs + unites en francais).\n"
-        "- **Streaming** : bouton Mettre a jour, boucle `--loop`, actualisation auto."
-    )
-
-if auto:
-    time.sleep(interval)
-    st.rerun()
+with tab_methode:
+    with st.expander("Pipeline et traduction", expanded=True):
+        st.markdown(
+            "- **Extraction** : `pipeline/fetch_te.py` lit les tableaux de la page TradingEconomics.\n"
+            "- **Stockage** : `data/morocco.db` (`indicators_latest`, `indicators_history`) + CSV.\n"
+            "- **Traduction** : `pipeline/traduction.py` (73 libelles + unites).\n"
+            "- **Organisation UI** : sidebar, onglets, conteneurs a bordure, colonnes, fragment (doc officielle Streamlit)."
+        )
