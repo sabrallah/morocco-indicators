@@ -171,9 +171,9 @@ def render_table(df: pd.DataFrame):
     Retourne (tableau affiche, evenement de selection) pour l'onglet Historique.
     """
     with st.container():
-        recherche = st.text_input("Filtrer", placeholder="Ex : PIB, chomage, inflation")
+        recherche = st.text_input("Filtrer", placeholder="Ex : PIB, chomage, inflation").strip()
         vue = (
-            df[df.indicateur_fr.str.contains(recherche, case=False, na=False)]
+            df[df.indicateur_fr.str.contains(recherche, case=False, na=False, regex=False)]
             if recherche
             else df
         )
