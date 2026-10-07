@@ -29,6 +29,11 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+try:
+    from st_keyup import st_keyup  # filtrage a chaque frappe (sinon text_input)
+except ImportError:  # pragma: no cover - repli si composant absent
+    st_keyup = None
+
 from pipeline.traduction import traduire_indicateur, traduire_unite
 
 # ----------------------------------------------------------------------------
@@ -171,7 +176,16 @@ def render_table(df: pd.DataFrame):
     Retourne (tableau affiche, evenement de selection) pour l'onglet Historique.
     """
     with st.container():
-        recherche = st.text_input("Filtrer", placeholder="Ex : PIB, chomage, inflation").strip()
+        if st_keyup is not None:
+            saisie = st_keyup(
+                "Filtrer",
+                placeholder="Ex : PIB, chomage, inflation",
+                debounce=300,
+                key="filtre_live",
+            )
+        else:
+            saisie = st.text_input("Filtrer", placeholder="Ex : PIB, chomage, inflation")
+        recherche = (saisie or "").strip()
         vue = (
             df[df.indicateur_fr.str.contains(recherche, case=False, na=False, regex=False)]
             if recherche
