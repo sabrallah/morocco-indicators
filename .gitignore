@@ -3,6 +3,6 @@ __pycache__/
 .venv/
 venv/
 data/*.db
-data/*.csv
+!data/.gitkeep
 check_db.py
 list_ind.py
