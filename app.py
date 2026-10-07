@@ -263,14 +263,21 @@ def render_history(df: pd.DataFrame, fr_vers_en: dict, tableau: pd.DataFrame, ev
             st.caption(f"{len(courbe)} points enregistres pour « {choix} ».")
 
         st.divider()
-        st.subheader("Variations (dernier releve vs precedent)")
-        variations = df.dropna(subset=["last", "previous"]).copy()
-        variations["variation"] = variations["last"] - variations["previous"]
-        top = variations.reindex(
-            variations["variation"].abs().sort_values(ascending=False).index
-        ).head(10)
-        st.bar_chart(top, x="indicateur_fr", y="variation", width="stretch")
-        st.caption("Top 10 des plus fortes variations absolues du dernier releve.")
+        st.subheader("Valeur actuelle vs precedente")
+        top = (
+            df.dropna(subset=["last", "previous"])
+            .reindex(df["last"].abs().sort_values(ascending=False).index)
+            .head(10)
+        )
+        courbes = pd.DataFrame(
+            {
+                "Indicateur": list(top["indicateur_fr"]) + list(top["indicateur_fr"]),
+                "Releve": ["Actuelle"] * len(top) + ["Precedente"] * len(top),
+                "Valeur": list(top["last"]) + list(top["previous"]),
+            }
+        )
+        st.line_chart(courbes, x="Indicateur", y="Valeur", color="Releve", width="stretch")
+        st.caption("Top 10 indicateurs : courbe actuelle vs precedente.")
 
 
 # ----------------------------------------------------------------------------
