@@ -37,7 +37,6 @@ from pipeline.traduction import traduire_indicateur, traduire_unite
 BASE = Path(__file__).resolve().parent
 DB_PATH = BASE / "data" / "morocco.db"
 CSV_SNAPSHOT = BASE / "data" / "morocco_latest.csv"
-SOURCE_URL = "https://tradingeconomics.com/morocco/indicators"
 
 # Libelles francais des 4 chiffres cles (cles = noms anglais sources).
 CHIFFRES_CLES = {
@@ -242,19 +241,6 @@ def render_history(df: pd.DataFrame, fr_vers_en: dict, tableau: pd.DataFrame, ev
         st.caption(f"{len(hist)} points enregistres pour « {choix} ».")
 
 
-def render_method() -> None:
-    """Documentation courte du pipeline (pour les futurs developpeurs)."""
-    with st.expander("Pipeline et traduction", expanded=True):
-        st.markdown(
-            "- **Extraction** : `pipeline/fetch_te.py` lit les tableaux "
-            f"de la page [TradingEconomics]({SOURCE_URL}).\n"
-            "- **Stockage** : `data/morocco.db` (`indicators_latest`, `indicators_history`) + CSV.\n"
-            "- **Traduction** : `pipeline/traduction.py` (73 libelles + unites).\n"
-            "- **Interface** : sidebar, onglets, conteneurs a bordure, colonnes "
-            "(doc officielle Streamlit)."
-        )
-
-
 # ----------------------------------------------------------------------------
 # Point d'entree
 # ----------------------------------------------------------------------------
@@ -290,15 +276,11 @@ def main() -> None:
     render_header(df)
     render_kpi_cards(df)
 
-    onglet_tableau, onglet_histo, onglet_methode = st.tabs(
-        ["Tableau", "Historique", "Methode"]
-    )
+    onglet_tableau, onglet_histo = st.tabs(["Tableau", "Historique"])
     with onglet_tableau:
         tableau, event = render_table(df)
     with onglet_histo:
         render_history(df, fr_vers_en, tableau, event)
-    with onglet_methode:
-        render_method()
 
 
 main()
