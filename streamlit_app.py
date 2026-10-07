@@ -101,7 +101,6 @@ def _nb_hist_points():
 # ---------- en-tete ----------
 with st.container():
     st.title("Indicateurs economiques du Maroc")
-    st.caption(f"Source : {SOURCE_URL} - donnees traduites en francais")
     maj = df["fetched_at"].max() if "fetched_at" in df else "N/D"
     c1, c2, c3 = st.columns(3, gap="small")
     c1.metric("Indicateurs suivis", f"{len(df)}")
