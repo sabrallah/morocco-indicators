@@ -1,7 +1,7 @@
 """Indicateurs du Maroc - application Streamlit organisee (doc officielle).
 Patterns doc : st.sidebar (controles persistants), st.tabs, st.columns(gap),
 st.container(border=True), st.expander, st.dataframe(width/column_config/on_select),
-@st.fragment(run_every) pour l'actualisation partielle, theme via .streamlit/config.toml.
+theme via .streamlit/config.toml.
 Donnees : TradingEconomics - affichage 100% francais.
 """
 import sqlite3
@@ -66,8 +66,6 @@ with st.sidebar:
     if st.button("Rafraichir l'affichage", use_container_width=True):
         load_latest.clear()
         st.rerun()
-    interval = st.selectbox("Intervalle du bandeau direct (s)", [15, 60, 300], index=1)
-    direct = st.toggle("Bandeau direct (fragment)", value=True)
     with st.expander("Aide"):
         st.markdown(
             "- **Mettre a jour** : re-scrape TradingEconomics vers SQLite.\n"
@@ -115,17 +113,6 @@ with st.container():
     c1.metric("Indicateurs suivis", f"{len(df)}")
     c2.metric("Derniere mise a jour", str(maj)[:16])
     c3.metric("Points d'historique", _nb_hist_points())
-
-# ---------- bandeau direct : fragment a re-execution partielle (doc st.fragment) ----------
-@st.fragment(run_every=interval if direct else None)
-def bandeau_direct():
-    with st.container(border=True):
-        a, b = st.columns([3, 1], gap="small")
-        a.write(f"Direct : {pd.Timestamp.now().strftime('%H:%M:%S')} - mode fragment, seul ce bandeau se rejoue.")
-        if b.button("Rejouer ce bandeau"):
-            st.rerun(scope="fragment")
-
-bandeau_direct()
 
 # ---------- cartes KPI ----------
 LIBELLES = {
@@ -226,5 +213,5 @@ with tab_methode:
             "- **Extraction** : `pipeline/fetch_te.py` lit les tableaux de la page TradingEconomics.\n"
             "- **Stockage** : `data/morocco.db` (`indicators_latest`, `indicators_history`) + CSV.\n"
             "- **Traduction** : `pipeline/traduction.py` (73 libelles + unites).\n"
-            "- **Organisation UI** : sidebar, onglets, conteneurs a bordure, colonnes, fragment (doc officielle Streamlit)."
+            "- **Organisation UI** : sidebar, onglets, conteneurs a bordure, colonnes (doc officielle Streamlit)."
         )
