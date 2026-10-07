@@ -1,162 +1,198 @@
-"""Indicateurs du Maroc - application Streamlit organisee (doc officielle).
-Patterns doc : st.sidebar (controles persistants), st.tabs, st.columns(gap),
-st.container(border=True), st.expander, st.dataframe(width/column_config/on_select),
-theme via .streamlit/config.toml.
-Donnees : TradingEconomics - affichage 100% francais.
+"""Indicateurs economiques du Maroc.
+
+Application Streamlit (francais) alimentee par un pipeline qui scrape les
+tableaux de TradingEconomics vers SQLite/CSV, avec libelles traduits.
+
+Structure du repo :
+  app.py                  -> cette application (code source unique)
+  streamlit_app.py        -> simple point d'entree exige par Streamlit Cloud
+  pipeline/fetch_te.py    -> extraction + stockage SQLite/CSV
+  pipeline/traduction.py  -> dictionnaires anglais -> francais
+  data/morocco_latest.csv -> snapshot embarque (demarrage instantane sur Cloud)
+  .streamlit/config.toml  -> theme + barre d'outils minimale
+
+Lancement local :
+  pip install -r requirements.txt
+  streamlit run app.py                 # ou : streamlit run streamlit_app.py
+  python pipeline/fetch_te.py --loop 300   # optionnel : accumule l'historique
+
+Patterns Streamlit suivis (https://docs.streamlit.io) :
+  mise en page   : st.sidebar, st.tabs, st.columns(gap=...), st.container(border=True)
+  tableau        : st.dataframe(width, hide_index, column_order, column_config,
+                   on_select + selection_mode) avec retour de selection
+  donnees        : @st.cache_data(ttl=...) pour SQLite/CSV
 """
+
 import sqlite3
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-BASE = Path(__file__).resolve().parent
-DB_PATH = BASE / "data" / "morocco.db"
-CSV_LATEST = BASE / "data" / "morocco_latest.csv"
-SOURCE_URL = "https://tradingeconomics.com/morocco/indicators"
-
-st.set_page_config(
-    page_title="Indicateurs du Maroc",
-    page_icon=":chart_with_upwards_trend:",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# ---------- donnees ----------
-@st.cache_data(ttl=10)
-def load_latest():
-    if DB_PATH.exists():
-        con = sqlite3.connect(DB_PATH)
-        try:
-            df = pd.read_sql("SELECT * FROM indicators_latest", con)
-        finally:
-            con.close()
-        if not df.empty:
-            return df
-    if CSV_LATEST.exists():
-        return pd.read_csv(CSV_LATEST)
-    from pipeline.fetch_te import fetch
-    return fetch()
-
-@st.cache_data(ttl=30)
-def load_history(indicator: str, limit: int = 200):
-    if not DB_PATH.exists():
-        return pd.DataFrame()
-    con = sqlite3.connect(DB_PATH)
-    try:
-        return pd.read_sql(
-            "SELECT fetched_at, last FROM indicators_history WHERE indicator=? ORDER BY fetched_at DESC LIMIT ?",
-            con, params=(indicator, limit),
-        )
-    finally:
-        con.close()
-
-# ---------- barre laterale : controles persistants (doc layouts) ----------
-with st.sidebar:
-    st.header("Controles")
-    if st.button("Mettre a jour", type="primary", use_container_width=True):
-        with st.spinner("Recuperation depuis TradingEconomics..."):
-            from pipeline.fetch_te import fetch, save
-            df_new = fetch()
-            save(df_new)
-            load_latest.clear()
-            load_history.clear()
-        st.toast(f"{len(df_new)} indicateurs mis a jour")
-        st.rerun()
-    if st.button("Rafraichir l'affichage", use_container_width=True):
-        load_latest.clear()
-        st.rerun()
-
-# ---------- chargement + traduction ----------
-try:
-    df = load_latest()
-except Exception:
-    st.error("Pipeline vide / recuperation impossible.")
-    st.info("Lancez : `python pipeline/fetch_te.py` puis relancez l'application.")
-    st.stop()
-
-if df.empty:
-    st.warning("Aucune donnee. Lancez `python pipeline/fetch_te.py`.")
-    st.stop()
-
 from pipeline.traduction import traduire_indicateur, traduire_unite
 
-df["indicateur_fr"] = df["indicator"].apply(traduire_indicateur)
-df["unite_fr"] = df["unit"].apply(lambda u: traduire_unite(u) if pd.notna(u) else u)
-FR_VERS_EN = dict(zip(df["indicateur_fr"], df["indicator"]))
+# ----------------------------------------------------------------------------
+# Constantes
+# ----------------------------------------------------------------------------
+BASE = Path(__file__).resolve().parent
+DB_PATH = BASE / "data" / "morocco.db"
+CSV_SNAPSHOT = BASE / "data" / "morocco_latest.csv"
+SOURCE_URL = "https://tradingeconomics.com/morocco/indicators"
 
-
-def _nb_hist_points():
-    if not DB_PATH.exists():
-        return "0"
-    try:
-        con = sqlite3.connect(DB_PATH)
-        try:
-            return str(con.execute("SELECT COUNT(*) FROM indicators_history").fetchone()[0])
-        finally:
-            con.close()
-    except Exception:
-        return "N/D"
-
-# ---------- en-tete ----------
-with st.container():
-    st.title("Indicateurs economiques du Maroc")
-    maj = df["fetched_at"].max() if "fetched_at" in df else "N/D"
-    c1, c2, c3 = st.columns(3, gap="small")
-    c1.metric("Indicateurs suivis", f"{len(df)}")
-    c2.metric("Derniere mise a jour", str(maj)[:16])
-    c3.metric("Points d'historique", _nb_hist_points())
-
-# ---------- cartes KPI ----------
-LIBELLES = {
+# Libelles francais des 4 chiffres cles (cles = noms anglais sources).
+CHIFFRES_CLES = {
     "GDP Annual Growth Rate": "Croissance du PIB",
     "Inflation Rate": "Inflation",
     "Unemployment Rate": "Chomage",
     "Interest Rate": "Taux d'interet",
 }
 
-def kpi(nom_te):
-    r = df[df.indicator == nom_te]
-    if r.empty:
-        return None
-    r = r.iloc[0]
-    delta = (r["last"] - r["previous"]) if pd.notna(r.get("previous")) else None
-    return r, delta
 
-with st.container():
-    st.subheader("Chiffres cles")
-    k1, k2, k3, k4 = st.columns(4, gap="medium")
-    for col, nom_te in zip([k1, k2, k3, k4], LIBELLES.keys()):
-        with col:
-            with st.container(border=True):
-                res = kpi(nom_te)
-                if res is None:
-                    st.metric(LIBELLES[nom_te], "N/D")
-                else:
-                    r, delta = res
+# ----------------------------------------------------------------------------
+# Couche donnees (mise en cache, cf. doc "Caching and state")
+# ----------------------------------------------------------------------------
+@st.cache_data(ttl=10)
+def load_latest() -> pd.DataFrame:
+    """Dernier releve : SQLite d'abord, sinon snapshot CSV, sinon scrape live."""
+    if DB_PATH.exists():
+        with sqlite3.connect(DB_PATH) as con:
+            df = pd.read_sql("SELECT * FROM indicators_latest", con)
+        if not df.empty:
+            return df
+    if CSV_SNAPSHOT.exists():
+        return pd.read_csv(CSV_SNAPSHOT)
+    from pipeline.fetch_te import fetch
+
+    return fetch()
+
+
+@st.cache_data(ttl=30)
+def load_history(indicator: str, limit: int = 200) -> pd.DataFrame:
+    """Historique d'un indicateur (nom anglais), vide si pas de SQLite."""
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    with sqlite3.connect(DB_PATH) as con:
+        return pd.read_sql(
+            "SELECT fetched_at, last FROM indicators_history "
+            "WHERE indicator=? ORDER BY fetched_at DESC LIMIT ?",
+            con,
+            params=(indicator, limit),
+        )
+
+
+def count_history_points() -> str:
+    """Nombre total de points d'historique (pour le bandeau d'en-tete)."""
+    if not DB_PATH.exists():
+        return "0"
+    try:
+        with sqlite3.connect(DB_PATH) as con:
+            return str(con.execute("SELECT COUNT(*) FROM indicators_history").fetchone()[0])
+    except Exception:
+        return "N/D"
+
+
+def franciser(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Ajoute les colonnes francaises + table de correspondance FR -> EN."""
+    df = df.copy()
+    df["indicateur_fr"] = df["indicator"].apply(traduire_indicateur)
+    df["unite_fr"] = df["unit"].apply(lambda u: traduire_unite(u) if pd.notna(u) else u)
+    return df, dict(zip(df["indicateur_fr"], df["indicator"]))
+
+
+# ----------------------------------------------------------------------------
+# Interface : sidebar, en-tete, KPI (doc "layouts and containers")
+# ----------------------------------------------------------------------------
+def render_sidebar() -> None:
+    """Controles persistants dans la sidebar."""
+    with st.sidebar:
+        st.header("Controles")
+        if st.button("Mettre a jour", type="primary", use_container_width=True):
+            with st.spinner("Recuperation depuis TradingEconomics..."):
+                from pipeline.fetch_te import fetch, save
+
+                df_new = fetch()
+                save(df_new)
+                load_latest.clear()
+                load_history.clear()
+            st.toast(f"{len(df_new)} indicateurs mis a jour")
+            st.rerun()
+        if st.button("Rafraichir l'affichage", use_container_width=True):
+            load_latest.clear()
+            st.rerun()
+
+
+def render_header(df: pd.DataFrame) -> None:
+    """Titre + 3 compteurs (indicateurs, date, points d'historique)."""
+    with st.container():
+        st.title("Indicateurs economiques du Maroc")
+        maj = df["fetched_at"].max() if "fetched_at" in df else "N/D"
+        c1, c2, c3 = st.columns(3, gap="small")
+        c1.metric("Indicateurs suivis", f"{len(df)}")
+        c2.metric("Derniere mise a jour", str(maj)[:16])
+        c3.metric("Points d'historique", count_history_points())
+
+
+def render_kpi_cards(df: pd.DataFrame) -> None:
+    """4 cartes KPI avec variation vs releve precedent."""
+
+    def lookup(nom_en: str):
+        lignes = df[df.indicator == nom_en]
+        if lignes.empty:
+            return None
+        ligne = lignes.iloc[0]
+        delta = (
+            ligne["last"] - ligne["previous"]
+            if pd.notna(ligne.get("previous"))
+            else None
+        )
+        return ligne, delta
+
+    with st.container():
+        st.subheader("Chiffres cles")
+        colonnes = st.columns(len(CHIFFRES_CLES), gap="medium")
+        for col, nom_en in zip(colonnes, CHIFFRES_CLES):
+            with col:
+                with st.container(border=True):
+                    res = lookup(nom_en)
+                    if res is None:
+                        st.metric(CHIFFRES_CLES[nom_en], "N/D")
+                        continue
+                    ligne, delta = res
+                    unite = traduire_unite(ligne.get("unite_fr", ligne.get("unit", "")))
                     st.metric(
-                        f"{LIBELLES[nom_te]} ({traduire_unite(r.get('unite_fr', r.get('unit', '')))})",
-                        f"{r['last']}",
+                        f"{CHIFFRES_CLES[nom_en]} ({unite})",
+                        f"{ligne['last']}",
                         delta=f"{round(delta, 2)}" if delta is not None else None,
                     )
-                    st.caption(f"Date : {r.get('date', 'N/D')}")
+                    st.caption(f"Date : {ligne.get('date', 'N/D')}")
 
-# ---------- onglets ----------
-tab_tableau, tab_histo, tab_methode = st.tabs(["Tableau", "Historique", "Methode"])
 
-with tab_tableau:
+# ----------------------------------------------------------------------------
+# Interface : onglets Tableau / Historique / Methode
+# ----------------------------------------------------------------------------
+def render_table(df: pd.DataFrame):
+    """Tableau filtrable et selectionnable (doc st.dataframe + column_config).
+
+    Retourne (tableau affiche, evenement de selection) pour l'onglet Historique.
+    """
     with st.container():
-        q = st.text_input("Filtrer", placeholder="Ex : PIB, chomage, inflation")
-        vue = df[df.indicateur_fr.str.contains(q, case=False, na=False)] if q else df
-        vue_aff = pd.DataFrame({
-            "Indicateur": vue["indicateur_fr"],
-            "Valeur": vue["last"],
-            "Precedent": vue["previous"],
-            "Unite": vue["unite_fr"],
-            "Date": vue["date"],
-        }).sort_values("Indicateur")
+        recherche = st.text_input("Filtrer", placeholder="Ex : PIB, chomage, inflation")
+        vue = (
+            df[df.indicateur_fr.str.contains(recherche, case=False, na=False)]
+            if recherche
+            else df
+        )
+        tableau = pd.DataFrame(
+            {
+                "Indicateur": vue["indicateur_fr"],
+                "Valeur": vue["last"],
+                "Precedent": vue["previous"],
+                "Unite": vue["unite_fr"],
+                "Date": vue["date"],
+            }
+        ).sort_values("Indicateur")
         event = st.dataframe(
-            vue_aff,
+            tableau,
             width="stretch",
             hide_index=True,
             column_order=("Indicateur", "Valeur", "Precedent", "Unite", "Date"),
@@ -171,40 +207,93 @@ with tab_tableau:
             selection_mode="single-row",
             key="tableau",
         )
-        st.caption(f"{len(vue_aff)} lignes. Cliquez une ligne pour l'envoyer vers l'onglet Historique.")
+        st.caption(
+            f"{len(tableau)} lignes. Cliquez une ligne pour l'envoyer vers l'onglet Historique."
+        )
+        return tableau, event
 
-with tab_histo:
+
+def selected_indicator(df: pd.DataFrame, tableau: pd.DataFrame, event) -> str:
+    """Nom francais preselectionne : ligne cliquee d'abord, sinon 1er choix."""
+    try:
+        lignes = event.selection.get("rows", []) if event is not None else []
+        if lignes:
+            candidat = tableau.iloc[lignes[0]]["Indicateur"]
+            if candidat in df["indicateur_fr"].tolist():
+                return candidat
+    except Exception:
+        pass
+    return sorted(df["indicateur_fr"].unique().tolist())[0]
+
+
+def render_history(df: pd.DataFrame, fr_vers_en: dict, tableau: pd.DataFrame, event) -> None:
+    """Courbe d'historique de l'indicateur choisi (ou clique dans le tableau)."""
     with st.container():
         st.subheader("Historique")
-        # priorite a la ligne selectionnee dans le tableau (doc dataframe selections)
-        sel_fr = None
-        try:
-            rows = event.selection.get("rows", []) if event is not None else []
-            if rows:
-                sel_fr = vue_aff.iloc[rows[0]]["Indicateur"]
-        except Exception:
-            sel_fr = None
-        choix = sel_fr if sel_fr in df["indicateur_fr"].tolist() else None
-        ind_fr = st.selectbox(
+        presel = selected_indicator(df, tableau, event)
+        choix = st.selectbox(
             "Indicateur",
             sorted(df["indicateur_fr"].unique().tolist()),
-            index=sorted(df["indicateur_fr"].unique().tolist()).index(choix) if choix else 0,
+            index=sorted(df["indicateur_fr"].unique().tolist()).index(presel),
         )
-        ind_en = FR_VERS_EN.get(ind_fr, ind_fr)
-        hist = load_history(ind_en)
+        hist = load_history(fr_vers_en.get(choix, choix))
         if hist.empty:
             st.info("Pas encore d'historique. Lancez : `python pipeline/fetch_te.py --loop 300`.")
-        else:
-            hist["fetched_at"] = pd.to_datetime(hist["fetched_at"])
-            hist = hist.sort_values("fetched_at")
-            st.line_chart(hist.set_index("fetched_at")["last"], use_container_width=True)
-            st.caption(f"{len(hist)} points enregistres pour « {ind_fr} ».")
+            return
+        hist["fetched_at"] = pd.to_datetime(hist["fetched_at"])
+        hist = hist.sort_values("fetched_at")
+        st.line_chart(hist.set_index("fetched_at")["last"], width="stretch")
+        st.caption(f"{len(hist)} points enregistres pour « {choix} ».")
 
-with tab_methode:
+
+def render_method() -> None:
+    """Documentation courte du pipeline (pour les futurs developpeurs)."""
     with st.expander("Pipeline et traduction", expanded=True):
         st.markdown(
-            "- **Extraction** : `pipeline/fetch_te.py` lit les tableaux de la page TradingEconomics.\n"
+            "- **Extraction** : `pipeline/fetch_te.py` lit les tableaux "
+            f"de la page [TradingEconomics]({SOURCE_URL}).\n"
             "- **Stockage** : `data/morocco.db` (`indicators_latest`, `indicators_history`) + CSV.\n"
             "- **Traduction** : `pipeline/traduction.py` (73 libelles + unites).\n"
-            "- **Organisation UI** : sidebar, onglets, conteneurs a bordure, colonnes (doc officielle Streamlit)."
+            "- **Interface** : sidebar, onglets, conteneurs a bordure, colonnes "
+            "(doc officielle Streamlit)."
         )
+
+
+# ----------------------------------------------------------------------------
+# Point d'entree
+# ----------------------------------------------------------------------------
+def main() -> None:
+    st.set_page_config(
+        page_title="Indicateurs du Maroc",
+        page_icon=":chart_with_upwards_trend:",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    render_sidebar()
+
+    try:
+        df = load_latest()
+    except Exception:
+        st.error("Pipeline vide / recuperation impossible.")
+        st.info("Lancez : `python pipeline/fetch_te.py` puis relancez l'application.")
+        st.stop()
+    if df.empty:
+        st.warning("Aucune donnee. Lancez `python pipeline/fetch_te.py`.")
+        st.stop()
+
+    df, fr_vers_en = franciser(df)
+    render_header(df)
+    render_kpi_cards(df)
+
+    onglet_tableau, onglet_histo, onglet_methode = st.tabs(
+        ["Tableau", "Historique", "Methode"]
+    )
+    with onglet_tableau:
+        tableau, event = render_table(df)
+    with onglet_histo:
+        render_history(df, fr_vers_en, tableau, event)
+    with onglet_methode:
+        render_method()
+
+
+main()

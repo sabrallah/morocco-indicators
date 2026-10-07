@@ -1,23 +1,29 @@
-"""Streaming pipeline source: TradingEconomics Morocco Indicators -> SQLite/CSV.
-URL: https://tradingeconomics.com/morocco/indicators
-Usage:
-  python pipeline/fetch_te.py              # one shot
-  python pipeline/fetch_te.py --loop 300   # streaming: every 300s
+"""Extraction des indicateurs du Maroc depuis TradingEconomics vers SQLite/CSV.
+
+Source : https://tradingeconomics.com/morocco/indicators
+Sorties : data/morocco_latest.csv + data/morocco.db
+          (tables `indicators_latest` ecrasee, `indicators_history` cumulee)
+
+Utilisation :
+  python pipeline/fetch_te.py              # un seul passage
+  python pipeline/fetch_te.py --loop 300   # repete toutes les 300 s
 """
 import argparse
+import re
 import sqlite3
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
+
 try:
+    # Console Windows (cp1252) : evite les crashs sur caracteres speciaux.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
-from datetime import datetime, timezone
-from pathlib import Path
-import re
 
-import requests
 import pandas as pd
+import requests
 
 URL = "https://tradingeconomics.com/morocco/indicators"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Morocco-Streamlit-Project)"}
@@ -27,116 +33,129 @@ DATA_DIR = BASE / "data"
 DB_PATH = DATA_DIR / "morocco.db"
 CSV_LATEST = DATA_DIR / "morocco_latest.csv"
 
-# Fallback snapshot (2026-10-07) if site blocks scraping
-FALLBACK = [
- ("Currency",9.98,9.96,"","", "Oct/26"),
- ("Stock Market",17132,16893,"points","", "Oct/26"),
- ("GDP Annual Growth Rate",4,4.6,"percent","GDP", "Jun/26"),
- ("Unemployment Rate",9.5,10.8,"percent","Labour", "Jun/26"),
- ("Inflation Rate",-0.3,-0.6,"percent","Prices", "Aug/26"),
- ("Interest Rate",2.25,2.25,"percent","Money", "Sep/26"),
- ("Balance of Trade",-37920,-46315,"MAD Million","Trade", "Aug/26"),
- ("Current Account",-5028,-13390,"MAD Million","Trade", "Mar/26"),
- ("Current Account to GDP",-2.4,-1.6,"percent of GDP","Trade", "Dec/25"),
- ("Government Debt to GDP",67.1,67.7,"percent of GDP","Government", "Dec/25"),
- ("Government Budget",-3.6,-3.9,"percent of GDP","Government", "Dec/25"),
- ("Consumer Confidence",60.1,64.4,"points","Consumer", "Jun/26"),
- ("GDP",182,161,"USD Billion","GDP", "Dec/25"),
- ("GDP per Capita",3644,3516,"USD","GDP", "Dec/25"),
- ("Tourist Arrivals",19800000,17411949,"","Trade", "Dec/25"),
- ("Foreign Exchange Reserves",500065,496761,"MAD Million","Money", "Aug/26"),
- ("Minimum Wages",3423,3045,"MAD/Month","Labour", "Jan/26"),
- ("Youth Unemployment Rate",22.9,23.4,"percent","Labour", "Jun/26"),
- ("Food Inflation",-3.9,-3.7,"percent","Prices", "Aug/26"),
- ("Industrial Production",-4.5,-1.4,"percent","Business", "Jun/26"),
+# Mots-cles des tableaux d'indicateurs (filtre anti-faux-positifs de read_html).
+MOTS_CLES = ["gdp", "rate", "inflation", "unemploy", "trade", "mad", "percent", "usd"]
+
+# Releve de secours si le site bloque le scraping (valeurs du 2026-10-07).
+# Noms en anglais comme le live : la traduction FR se fait dans l'app.
+SECOURS = [
+    ("Currency", 9.98, 9.96, "", "Oct/26"),
+    ("Stock Market", 17132, 16893, "points", "Oct/26"),
+    ("GDP Annual Growth Rate", 4, 4.6, "percent", "Jun/26"),
+    ("Unemployment Rate", 9.5, 10.8, "percent", "Jun/26"),
+    ("Inflation Rate", -0.3, -0.6, "percent", "Aug/26"),
+    ("Interest Rate", 2.25, 2.25, "percent", "Sep/26"),
+    ("Balance of Trade", -37920, -46315, "MAD Million", "Aug/26"),
+    ("Current Account", -5028, -13390, "MAD Million", "Mar/26"),
+    ("Current Account to GDP", -2.4, -1.6, "percent of GDP", "Dec/25"),
+    ("Government Debt to GDP", 67.1, 67.7, "percent of GDP", "Dec/25"),
+    ("Government Budget", -3.6, -3.9, "percent of GDP", "Dec/25"),
+    ("Consumer Confidence", 60.1, 64.4, "points", "Jun/26"),
+    ("GDP", 182, 161, "USD Billion", "Dec/25"),
+    ("GDP per Capita", 3644, 3516, "USD", "Dec/25"),
+    ("Tourist Arrivals", 19800000, 17411949, "", "Dec/25"),
+    ("Foreign Exchange Reserves", 500065, 496761, "MAD Million", "Aug/26"),
+    ("Minimum Wages", 3423, 3045, "MAD/Month", "Jan/26"),
+    ("Youth Unemployment Rate", 22.9, 23.4, "percent", "Jun/26"),
+    ("Food Inflation", -3.9, -3.7, "percent", "Aug/26"),
+    ("Industrial Production", -4.5, -1.4, "percent", "Jun/26"),
 ]
 
-def parse_value(x):
-    if x is None or (isinstance(x, float) and pd.isna(x)):
+
+def parse_nombre(valeur):
+    """Convertit une cellule de tableau en float, None si illisible."""
+    if valeur is None or (isinstance(valeur, float) and pd.isna(valeur)):
         return None
-    s = str(x).strip().replace(",", "")
-    s = re.sub(r"[^\d\.\-]", "", s)
+    texte = re.sub(r"[^\d.\-]", "", str(valeur).strip().replace(",", ""))
+    if texte in ("", "-", "."):
+        return None
     try:
-        return float(s) if s not in ("", "-", ".") else None
+        return float(texte)
     except ValueError:
         return None
 
-def fetch_live():
-    r = requests.get(URL, headers=HEADERS, timeout=30)
-    r.raise_for_status()
-    r.encoding = "utf-8"
+
+def fetch_live() -> pd.DataFrame:
+    """Scrape live : toutes les tables d'indicateurs de la page."""
+    reponse = requests.get(URL, headers=HEADERS, timeout=30)
+    reponse.raise_for_status()
+    reponse.encoding = "utf-8"
     import io
-    tables = pd.read_html(io.StringIO(r.text), flavor="lxml")
-    rows = []
-    for t in tables:
-        # Expected cols: Indicator | Last | Previous | Highest | Lowest | ... | Date
-        if t.shape[1] < 6 or t.shape[0] < 3:
-            continue
-        t = t.iloc[:, :7]
-        t.columns = ["indicator", "last", "previous", "highest", "lowest", "unit", "date"][: len(t.columns)]
-        if "indicator" not in t.columns:
-            continue
-        # keep only tables that look like indicators (contain GDP / Rate / etc or percent/MAD)
-        sample = " ".join(t["indicator"].astype(str).tolist()[:5])
-        blob = str(t.to_string()).lower()
-        if not any(k in blob for k in ["gdp", "rate", "inflation", "unemploy", "trade", "mad", "percent", "usd"]):
-            continue
-        for _, row in t.iterrows():
-            name = str(row.get("indicator", "")).strip()
-            if not name or name.lower() in ("nan", "last"):
-                continue
-            if len(name) > 60:
-                continue
-            rows.append({
-                "indicator": name,
-                "last": parse_value(row.get("last")),
-                "previous": parse_value(row.get("previous")),
-                "unit": str(row.get("unit", "")).strip()[:30],
-                "date": str(row.get("date", "")).strip()[:20],
-            })
-    if len(rows) < 10:
-        raise ValueError(f"parse failed, only {len(rows)} rows")
-    return pd.DataFrame(rows).drop_duplicates("indicator")
 
-def fetch_fallback():
-    return pd.DataFrame([{
-        "indicator": n, "last": l, "previous": p, "unit": u, "date": d
-    } for n, l, p, u, _, d in FALLBACK])
+    lignes = []
+    for table in pd.read_html(io.StringIO(reponse.text), flavor="lxml"):
+        if table.shape[1] < 6 or table.shape[0] < 3:
+            continue
+        if not any(mot in str(table.to_string()).lower() for mot in MOTS_CLES):
+            continue
+        table = table.iloc[:, :7]
+        table.columns = ["indicator", "last", "previous", "highest", "lowest", "unit", "date"]
+        for _, rang in table.iterrows():
+            nom = str(rang.get("indicator", "")).strip()
+            if not nom or nom.lower() in ("nan", "last") or len(nom) > 60:
+                continue
+            lignes.append(
+                {
+                    "indicator": nom,
+                    "last": parse_nombre(rang.get("last")),
+                    "previous": parse_nombre(rang.get("previous")),
+                    "unit": str(rang.get("unit", "")).strip()[:30],
+                    "date": str(rang.get("date", "")).strip()[:20],
+                }
+            )
+    if len(lignes) < 10:
+        raise ValueError(f"extraction incomplete : {len(lignes)} lignes")
+    return pd.DataFrame(lignes).drop_duplicates("indicator")
 
-def fetch():
+
+def fetch_secours() -> pd.DataFrame:
+    """Releve fige utilise quand le site est injoignable."""
+    return pd.DataFrame(
+        [
+            {"indicator": nom, "last": v, "previous": p, "unit": u, "date": d}
+            for nom, v, p, u, d in SECOURS
+        ]
+    )
+
+
+def fetch() -> pd.DataFrame:
+    """Tente le live, sinon le secours. Ajoute horodatage + source."""
     try:
         df = fetch_live()
-        print(f"[pipeline] live scrape OK: {len(df)} indicators")
-    except Exception as e:
-        msg = str(e).encode("ascii", "ignore").decode()[:200]
-        print(f"[pipeline] live failed ({msg}), using fallback snapshot")
-        df = fetch_fallback()
+        print(f"[pipeline] scrape direct OK : {len(df)} indicateurs")
+    except Exception as exc:
+        detail = str(exc).encode("ascii", "ignore").decode()[:200]
+        print(f"[pipeline] echec direct ({detail}), releve de secours")
+        df = fetch_secours()
     df["fetched_at"] = datetime.now(timezone.utc).isoformat()
     df["source"] = URL
     return df
 
-def save(df: pd.DataFrame):
+
+def save(df: pd.DataFrame) -> None:
+    """Ecrit le CSV + SQLite (dernier releve + historique cumulatif)."""
     DATA_DIR.mkdir(exist_ok=True)
     df.to_csv(CSV_LATEST, index=False)
-    con = sqlite3.connect(DB_PATH)
-    df.to_sql("indicators_latest", con, if_exists="replace", index=False)
-    df.to_sql("indicators_history", con, if_exists="append", index=False)
-    con.execute("CREATE INDEX IF NOT EXISTS idx_hist ON indicators_history(indicator, fetched_at)")
-    con.commit()
-    con.close()
-    print(f"[pipeline] saved {len(df)} rows -> {CSV_LATEST} + {DB_PATH}")
+    with sqlite3.connect(DB_PATH) as con:
+        df.to_sql("indicators_latest", con, if_exists="replace", index=False)
+        df.to_sql("indicators_history", con, if_exists="append", index=False)
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hist ON indicators_history(indicator, fetched_at)"
+        )
+    print(f"[pipeline] {len(df)} lignes -> {CSV_LATEST} + {DB_PATH}")
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--loop", type=int, default=0, help="seconds between fetches, 0=once")
-    args = ap.parse_args()
+
+def main() -> None:
+    args = argparse.ArgumentParser()
+    args.add_argument("--loop", type=int, default=0, help="secondes entre passages, 0 = une fois")
+    intervalle = args.parse_args().loop
     while True:
-        df = fetch()
-        save(df)
-        if not args.loop:
+        save(fetch())
+        if not intervalle:
             break
-        print(f"[pipeline] next fetch in {args.loop}s...")
-        time.sleep(args.loop)
+        print(f"[pipeline] prochain passage dans {intervalle}s...")
+        time.sleep(intervalle)
+
 
 if __name__ == "__main__":
     main()
