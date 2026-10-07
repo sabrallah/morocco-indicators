@@ -66,12 +66,6 @@ with st.sidebar:
     if st.button("Rafraichir l'affichage", use_container_width=True):
         load_latest.clear()
         st.rerun()
-    with st.expander("Aide"):
-        st.markdown(
-            "- **Mettre a jour** : re-scrape TradingEconomics vers SQLite.\n"
-            "- **Tableau** : cliquez une ligne pour voir son historique.\n"
-            "- Boucle locale : `python pipeline/fetch_te.py --loop 300`."
-        )
 
 # ---------- chargement + traduction ----------
 try:
