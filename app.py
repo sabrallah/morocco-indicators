@@ -80,17 +80,6 @@ def load_history(indicator: str, limit: int = 200) -> pd.DataFrame:
         )
 
 
-def count_history_points() -> str:
-    """Nombre total de points d'historique (pour le bandeau d'en-tete)."""
-    if not DB_PATH.exists():
-        return "0"
-    try:
-        with sqlite3.connect(DB_PATH) as con:
-            return str(con.execute("SELECT COUNT(*) FROM indicators_history").fetchone()[0])
-    except Exception:
-        return "N/D"
-
-
 def franciser(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Ajoute les colonnes francaises + table de correspondance FR -> EN."""
     df = df.copy()
@@ -122,14 +111,13 @@ def render_sidebar() -> None:
 
 
 def render_header(df: pd.DataFrame) -> None:
-    """Titre + 3 compteurs (indicateurs, date, points d'historique)."""
+    """Titre + 2 compteurs (indicateurs suivis, derniere mise a jour)."""
     with st.container():
         st.title("Indicateurs economiques du Maroc")
         maj = df["fetched_at"].max() if "fetched_at" in df else "N/D"
-        c1, c2, c3 = st.columns(3, gap="small")
+        c1, c2 = st.columns(2, gap="small")
         c1.metric("Indicateurs suivis", f"{len(df)}")
         c2.metric("Derniere mise a jour", str(maj)[:16])
-        c3.metric("Points d'historique", count_history_points())
 
 
 def render_kpi_cards(df: pd.DataFrame) -> None:
